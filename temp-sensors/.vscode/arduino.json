@@ -1,0 +1,6 @@
+{
+    "board": "atmega:avr:atmega328",
+    "configuration": "clock=internal8,cpu=atmega328p",
+    "sketch": "temp-sensors.ino",
+    "port": "/dev/ttyUSB0"
+}
