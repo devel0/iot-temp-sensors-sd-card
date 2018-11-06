@@ -2,6 +2,8 @@
 
 atmega328 + onewire ds18b20 + ethernet w5500 + sd card
 
+![img](doc/20181106_143657x.jpg)
+
 ## memory considerations
 
 using w5500 save up to about 5.5k flash bytes
