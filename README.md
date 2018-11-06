@@ -13,7 +13,7 @@ this is a variant of [this project](https://github.com/devel0/iot-temp-sensors) 
   - blue SPI slave chip select
   - violet serial transmission line ( debug )
 
-- [schematics](https://easyeda.com/lorenzo.delana/iot-temp-sensors-sd-card)
+- [schematics](https://easyeda.com/editor#id=|7506cd41b26244d4b4f3a225eba49999)
 
 - notes about [sd card spi](https://github.com/devel0/iot-atmega-bare/tree/2a97d018bbcc610b511446b6d2a4c0ba3d237dcf#notes-about-spi)
 
