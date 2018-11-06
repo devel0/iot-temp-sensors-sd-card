@@ -39,3 +39,9 @@ this is a variant of [this project](https://github.com/devel0/iot-temp-sensors) 
 ## memory considerations
 
 using w5500 save up to about 5.5k flash bytes
+
+## roadmap
+
+- currently sd card used to discharge flash from weight of html/javascript and at the same time to allow easy debugging/editing from pc ; subsequently sd card will be used to log data so that the index.htm can contains a graph of temperatures history
+
+- this version uses W5500 but simply commenting Ethernet.h and uncomment [UIPEthernet.h](https://github.com/devel0/iot-temp-sensors-sd-card/blob/a068eca9ee6f2653f08d43562722f0427cce174c/temp-sensors-sd-card/temp-sensors.ino#L40) allow to run through enc28j60 ; to make it run in the 32K m328 flash would need to [disable UDP]() that should save 5k flash while another possible 1.2k save could from [this pr](https://github.com/UIPEthernet/UIPEthernet/pull/47)
