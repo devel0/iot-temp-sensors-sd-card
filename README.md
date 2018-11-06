@@ -1,7 +1,7 @@
 # iot-temp-sensors-sd-card
 
 atmega328 + onewire ds18b20 + ethernet w5500 + sd card
-this is a variant of [this project](https://github.com/devel0/iot-temp-sensors-sd-card) with sd card support
+this is a variant of [this project](https://github.com/devel0/iot-temp-sensors) with sd card support
 
 <img src="doc/20181106_143657x.jpg" width=640/>
 
