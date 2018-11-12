@@ -12,7 +12,7 @@
 #define ENABLE_CORS 1
 
 // choose one of follow two interface
-//#define USE_ENC28J60
+//#define USE_ENC28J60 // not enough RAM to manage
 #define USE_W5500
 
 #define MACADDRESS 0x33, 0xcf, 0x8d, 0x9f, 0x5b, 0x89
@@ -25,10 +25,19 @@
 #define ONE_WIRE_BUS 3
 // EDIT DebugMacros to set SERIAL_SPEED and enable/disable DPRINT_SERIAL
 
+// storage size each day = temp_device_count * sizeof(float) * 60*60*24 / TEMPERATURE_HISTORY_INTERVAL_SEC
+// sizeof(float) = 4
+// example (interval 5sec) 4 devices occupies 270k/day or 96mb/year
 #define TEMPERATURE_HISTORY_INTERVAL_SEC 5
+
+// set to false in production
+bool TEMPERATURE_HISTORY_RESET = true;
 
 #define SD_CARD_CSPIN 4
 #define ETH_CSPIN 10
+
+#define NONETH_ACTIVITY_LED_PIN 8
+#define ETH_ACTIVITY_LED_PIN 7
 
 //
 //==============================================================================
@@ -48,7 +57,7 @@ unsigned long lastTemperatureRead, lastTemperatureHistoryRecord;
 #include <DallasTemperature.h>
 #include <mywifikey.h>
 
-// save 1k flash vs Sd.h
+// (https://github.com/greiman/SdFat) save 1k flash vs Sd.h
 #include <SdFat.h>
 SdFat SD;
 
@@ -68,7 +77,7 @@ using namespace SearchAThing::Arduino;
 
 DPrintCls print;
 
-String header;
+unsigned char *header;
 EthernetServer server = EthernetServer(LISTENPORT);
 
 #define TEMPERATURE_ADDRESS_BYTES 8
@@ -81,10 +90,30 @@ float *temperatures = NULL;    // current temp
 DeviceAddress *tempDevAddress; // DeviceAddress defined as uint8_t[8]
 char **tempDevHexAddress;
 
+void noneth_ledon()
+{
+  digitalWrite(NONETH_ACTIVITY_LED_PIN, HIGH);
+}
+
+void noneth_ledoff()
+{
+  digitalWrite(NONETH_ACTIVITY_LED_PIN, LOW);
+}
+
+void eth_ledon()
+{
+  digitalWrite(ETH_ACTIVITY_LED_PIN, HIGH);
+}
+
+void eth_ledoff()
+{
+  digitalWrite(ETH_ACTIVITY_LED_PIN, LOW);
+}
+
 void printFreeram()
 {
-  DPrint(F("Freeram : "));
-  DPrintln((long)FreeMemorySum());
+  DPrintF(F("FR:"));
+  DPrintLongln(FreeMemorySum());
 }
 
 //
@@ -97,24 +126,29 @@ void setup()
 
   pinMode(ETH_CSPIN, OUTPUT);
   digitalWrite(ETH_CSPIN, HIGH);
+
+  pinMode(NONETH_ACTIVITY_LED_PIN, OUTPUT);
+  pinMode(ETH_ACTIVITY_LED_PIN, OUTPUT);
+
+  noneth_ledoff();
+  eth_ledoff();
+
   delay(1);
 
-  DPrintln(F("STARTUP"));
+  header = (unsigned char *)malloc(MAX_HEADER_SIZE + 1);
 
-  DPrintln(F("Init SD"));
+  DPrintFln(F("ST"));
+
+  DPrintFln(F("ISD"));
   if (!SD.begin(SD_CARD_CSPIN))
   {
-    DPrintln(F("SD begin failed"));
+    DPrintFln(F("FAIL"));
     while (1)
       ;
   }
 
-
   lastTemperatureRead = lastTemperatureHistoryRecord = millis();
 
-  printFreeram();
-
-  header.reserve(MAX_HEADER_SIZE);
   SetupTemperatureDevices();
 
   uint8_t mac[6] = {MACADDRESS};
@@ -129,16 +163,18 @@ void setup()
   // static
   Ethernet.begin(mac, myIP, myDNS, myGW, myMASK);
 
-  DPrint("my ip : ");
+  DPrintF(F("IP:"));
   for (int i = 0; i < 4; ++i)
   {
-    DPrint(Ethernet.localIP()[i]);
+    DPrintInt16(Ethernet.localIP()[i]);
     if (i != 3)
-      DPrint('.');
+      DPrintChar('.');
   }
   DPrintln();
 
   server.begin();
+
+  printFreeram();
 }
 
 //
@@ -146,10 +182,12 @@ void setup()
 //
 void SetupTemperatureDevices()
 {
+  noneth_ledon();
+
   DS18B20.begin();
   temperatureDeviceCount = DS18B20.getDeviceCount();
-  DPrint(F("temperature device count = "));
-  DPrintIntln(temperatureDeviceCount);
+  DPrintF(F("TC:"));
+  DPrintInt16ln(temperatureDeviceCount);
   if (temperatureDeviceCount > 0)
   {
     temperatures = new float[temperatureDeviceCount];
@@ -170,10 +208,10 @@ void SetupTemperatureDevices()
               tempDevAddress[i][6],
               tempDevAddress[i][7]);
 
-      DPrint("sensor [");
-      DPrintInt(i);
-      DPrint("] address = ");
-      DPrint(tempDevHexAddress[i]);
+      DPrintF(F("T["));
+      DPrintInt16(i);
+      DPrintF(F("]ADR="));
+      DPrintStr(tempDevHexAddress[i]);
       DPrintln();
 
       DS18B20.setResolution(12);
@@ -181,6 +219,8 @@ void SetupTemperatureDevices()
   }
 
   ReadTemperatures();
+
+  noneth_ledoff();
 }
 
 //
@@ -188,18 +228,18 @@ void SetupTemperatureDevices()
 //
 void ReadTemperatures()
 {
+  noneth_ledon();
+
   DS18B20.requestTemperatures();
   for (int i = 0; i < temperatureDeviceCount; ++i)
   {
     auto temp = DS18B20.getTempC(tempDevAddress[i]);
-    DPrint(F("temperature sensor ["));
-    DPrintInt(i);
-    DPrint(F("] = "));
-    DPrintln(temp, 4);
     temperatures[i] = temp;
   }
 
   lastTemperatureRead = millis();
+
+  noneth_ledoff();
 }
 
 #define CCTYPE_HTML 0
@@ -209,31 +249,37 @@ void ReadTemperatures()
 
 void clientOk(EthernetClient &client, int type)
 {
-  client.println("HTTP/1.1 200 OK");
+  eth_ledon();
+
+  client.println(F("HTTP/1.1 200 OK"));
+  client.print(F("Content-Type: "));
   switch (type)
   {
   case CCTYPE_HTML:
-    client.println("Content-Type: text/html");
+    client.println(F("text/html"));
     break;
 
   case CCTYPE_JSON:
-    client.println("Content-Type: application/json");
-    break;
-
-  case CCTYPE_TEXT:
-    client.println("Content-Type: text/plain");
+    client.println(F("application/json"));
     break;
 
   case CCTYPE_JS:
-    client.println("Content-Type: text/javascript");
+    client.println(F("text/javascript"));
+    break;
+
+  default:
+  case CCTYPE_TEXT:
+    client.println(F("text/plain"));
     break;
   }
 
 #if ENABLE_CORS == 1
-  client.println("Access-Control-Allow-Origin: *");
+  client.println(F("Access-Control-Allow-Origin: *"));
 #endif
 
   client.println();
+
+  eth_ledoff();
 }
 
 //
@@ -245,28 +291,45 @@ void loop()
 
   if (EthernetClient client = server.available())
   {
+    DPrintFln(F("ETH"));
+    eth_ledon();
 
     while ((size = client.available()) > 0)
     {
-      header = "";
-
-      for (int i = 0; i < min(MAX_HEADER_SIZE, size); ++i)
+      header[0] = 0;
       {
-        char c = (char)client.read();
-
-        if (c == '\r')
+        int i = 0;
+        DPrintF(F("SZ:"));
+        DPrintInt16ln(size);
+        auto lim = min(MAX_HEADER_SIZE, size);
+        while (i < lim)
         {
-          break;
+          char c = (char)client.read();
+
+          if (c == '\r')
+          {
+            break;
+          }
+          header[i++] = c;
         }
-        header.concat(c);
+        header[i] = 0;
       }
+
+      if (strlen(header) < 5 || strncmp(header, "GET /", 5) < 0)
+      {
+        client.stop();
+        break;
+      }
+
+      DPrintF(F("HDR["));
+      DPrintStr(header);
+      DPrintCharln(']');
 
       //--------------------------
       // /tempdevices
       //--------------------------
-      if (strncmp(header.c_str(), "GET /tempdevices", 16) == 0)
+      if (strncmp(header, "GET /tempdevices", 16) == 0)
       {
-        DPrintln("temp devices");
         clientOk(client, CCTYPE_JSON);
 
         client.print(F("{\"tempdevices\":["));
@@ -288,18 +351,18 @@ void loop()
       //--------------------------
       // /temp/{id}
       //--------------------------
-      if (strncmp(header.c_str(), "GET /temp/", 10) == 0)
+      if (strncmp(header, "GET /temp/", 10) == 0)
       {
         auto hbasesize = 10; // "GET /temp/"
         bool found = false;
 
-        if (header.length() - hbasesize >= 8)
+        if (strlen(header) - hbasesize >= 8)
         {
           clientOk(client, CCTYPE_TEXT);
 
           for (int i = 0; i < temperatureDeviceCount; ++i)
           {
-            if (strncmp(header.c_str() + hbasesize, tempDevHexAddress[i],
+            if (strncmp(header + hbasesize, tempDevHexAddress[i],
                         2 * TEMPERATURE_ADDRESS_BYTES) == 0)
             {
               char tmp[20];
@@ -313,7 +376,7 @@ void loop()
           }
         }
         if (!found)
-          client.print(F("not found"));
+          client.print(F("NF"));
 
         client.stop();
         break;
@@ -322,15 +385,31 @@ void loop()
       //--------------------------
       // /temphistory
       //--------------------------
-      if (strncmp(header.c_str(), "GET /temphistory", 16) == 0)
+      if (strncmp(header, "GET /temphistory/", 17) == 0)
       {
+        DPrintFln(F("TH"));
+        // nr of TEMPERATURE_HISTORY_INTERVAL_SEC interval readings requested
+        long backlogsize = 0;
+        {
+          char buf[16];
+          int k = 0;
+          for (int i = 17; i < strlen(header); ++i)
+          {
+            if (header[i] == ' ' || k == 15)
+              break;
+            buf[k++] = header[i];
+          }
+          buf[k] = 0;
+          backlogsize = atol(buf);
+        }
+
         clientOk(client, CCTYPE_JSON);
 
-        /*
-        DPrint(F("temperatureHistoryFillCnt:"));
-        DPrintln(temperatureHistoryFillCnt);
-        DPrint(F("temperatureHistoryOff:"));
-        DPrintln(temperatureHistoryOff);
+        auto floatsize = sizeof(float);
+
+        // ensure bufsize multiple of sizeof(float)
+        auto bufsize = ((int)(SD_CARD_READ_BUFSIZE / floatsize)) * floatsize;
+        uint8_t buf[bufsize];
 
         client.print('[');
         for (int i = 0; i < temperatureDeviceCount; ++i)
@@ -338,22 +417,58 @@ void loop()
           client.print(F("{\""));
           client.print(tempDevHexAddress[i]);
           client.print(F("\":["));
-          auto j = (temperatureHistoryFillCnt == TEMPERATURE_HISTORY_SIZE) ? temperatureHistoryOff : 0;
-          auto size = min(temperatureHistoryFillCnt, TEMPERATURE_HISTORY_SIZE);
-          for (int k = 0; k < size; ++k)
+
+          if (SD.exists(tempDevHexAddress[i]))
           {
-            if (j == TEMPERATURE_HISTORY_SIZE)
-              j = 0;
-            client.print(temperatureHistory[i][j++]);
-            if (k < size - 1)
-              client.print(',');
+            DPrintF(F("file:["));
+            DPrintStr(tempDevHexAddress[i]);
+            auto f = SD.open(tempDevHexAddress[i]);
+            auto fsize = f.size();
+            uint32_t foff = 0;
+            if (fsize >= backlogsize * floatsize)
+              foff = fsize - backlogsize * floatsize;
+            DPrintF(F("] foff:"));
+            DPrintUInt32(foff);
+            DPrintF(F(" fsize:"));
+            DPrintUInt32ln(fsize);
+
+            f.seek(foff);
+
+            char tmp[20];
+            int serie = 0;
+            while (f.available())
+            {
+              auto cnt = f.read(buf, bufsize);
+              DPrintStr("rcnt:");
+              DPrintInt16ln(cnt);
+              printFreeram();
+
+              for (int j = 0; j < cnt; j += floatsize)
+              {
+                float temp = 0.0;
+                for (int u = 0; u < floatsize; ++u)
+                {
+                  ((uint8_t *)(&temp))[u] = buf[j + u];
+                }
+                DPrintF(F("tmp:"));
+                DPrintFloatln(temp);
+
+                FloatToString(tmp, temp, 6);
+                if (serie > 0)
+                  client.print(',');
+                client.print(tmp);
+                ++serie;
+              }
+            }
+
+            f.close();
           }
           client.print(F("]}"));
           if (i != temperatureDeviceCount - 1)
             client.print(',');
         }
         client.print(']');
-*/
+
         client.stop();
         break;
       }
@@ -361,14 +476,14 @@ void loop()
       //--------------------------
       // /info
       //--------------------------
-      if (strncmp(header.c_str(), "GET /info", 9) == 0)
+      if (strncmp(header, "GET /info", 9) == 0)
       {
         clientOk(client, CCTYPE_JSON);
 
         client.print('{');
 
         client.print(F("\"freeram\":"));
-        client.print((long)FreeMemorySum());        
+        client.print((long)FreeMemorySum());
 
         client.print(F(", \"history_interval_sec\":"));
         client.print(TEMPERATURE_HISTORY_INTERVAL_SEC);
@@ -382,10 +497,10 @@ void loop()
       //--------------------------
       // /
       //--------------------------
-      //if (strncmp(header.c_str(), "GET / ", 6) == 0 || strncmp(header.c_str(), "GET /index.htm", 14) == 0)
+      if (strncmp(header, "GET /", 5) == 0)
       {
-        DPrint(F("Freeram : "));
-        DPrintln(FreeMemorySum());
+        printFreeram();
+
         uint8_t buf[SD_CARD_READ_BUFSIZE];
 
         String pathfilename;
@@ -393,8 +508,8 @@ void loop()
           char path[80];
           int j = 0;
           int i = 5; // skip "GET /"
-          auto hlen = header.length();
-          auto hcstr = header.c_str();
+          auto hlen = strlen(header);
+          auto hcstr = header;
           // note : only html non escapable characters in filename
           while (i < hlen)
           {
@@ -409,10 +524,6 @@ void loop()
           pathfilename = j == 0 ? String("index.htm") : String(path);
         }
 
-        DPrint(F("serving ["));
-        DPrint(pathfilename.c_str());
-        DPrintln(']');
-
         if (SD.exists(pathfilename.c_str()))
         {
           if (pathfilename.indexOf(".js") >= 0)
@@ -421,6 +532,14 @@ void loop()
             clientOk(client, CCTYPE_HTML);
 
           auto f = SD.open(pathfilename.c_str());
+          auto size = f.size();
+
+          DPrintF(F("RQ["));
+          DPrintStr(pathfilename.c_str());
+          DPrintF(F("]SZ:"));
+          DPrintFloat(((float)size / 1024), 1);
+          DPrintFln(F("K"));
+
           while (f.available())
           {
             auto cnt = f.read(buf, SD_CARD_READ_BUFSIZE);
@@ -430,42 +549,73 @@ void loop()
         }
         else
         {
-          DPrint(F("couldn't find ["));
-          DPrint(pathfilename.c_str());
-          DPrintln(']');
+          DPrintF(F("NF["));
+          DPrintStr(pathfilename.c_str());
+          DPrintCharln(']');
         }
 
+        DPrintFln(F("EINV"));
         client.stop();
-
         break;
       }
     }
-  }
 
-  if (TimeDiff(lastTemperatureRead, millis()) > TEMPERATURE_INTERVAL_MS)
+    eth_ledoff();
+  }
+  else if (TimeDiff(lastTemperatureRead, millis()) > TEMPERATURE_INTERVAL_MS)
   {
-    printFreeram();
+    noneth_ledon();
     ReadTemperatures();
+    noneth_ledoff();
   }
-
-  if (TimeDiff(lastTemperatureHistoryRecord, millis()) > 1000UL * TEMPERATURE_HISTORY_INTERVAL_SEC)
+  else if (TimeDiff(lastTemperatureHistoryRecord, millis()) > 1000UL * TEMPERATURE_HISTORY_INTERVAL_SEC)
   {
-    DPrintln(F("SD contents"));
-    SD.ls(&print, LS_R);
-
-    /*
-    if (temperatureHistoryFillCnt < TEMPERATURE_HISTORY_SIZE)
-      ++temperatureHistoryFillCnt;
-
-    if (temperatureHistoryOff == TEMPERATURE_HISTORY_SIZE)
-      temperatureHistoryOff = 0;
+    noneth_ledon();
+    digitalWrite(NONETH_ACTIVITY_LED_PIN, HIGH);
+    auto recbegin = millis();
 
     for (int i = 0; i < temperatureDeviceCount; ++i)
     {
-      int8_t t = trunc(round(temperatures[i]));
-      temperatureHistory[i][temperatureHistoryOff] = t;
+      auto filename = tempDevHexAddress[i];
+      auto t = temperatures[i];
+
+      File f;
+
+      auto exists = SD.exists(filename);
+      // open ref
+      // https://github.com/greiman/SdFat/blob/46aff556c5ecad832ca3f19e184fd06e765f5641/src/FatLib/FatFile.h#L508
+      if (TEMPERATURE_HISTORY_RESET || !exists)
+      {
+        DPrintF(F("CR:"));
+        DPrintStrln(filename);
+
+        if (exists)
+          SD.remove(filename);
+        f = SD.open(filename, O_WRITE | O_CREAT);
+      }
+      else
+        f = SD.open(filename, O_WRITE | O_APPEND);
+
+      auto size = f.size();
+
+      // save float as bytes
+      uint8_t buf[sizeof(float)];
+      for (int j = 0; j < sizeof(float); ++j)
+      {
+        buf[j] = ((uint8_t *)(&t))[j];
+      }
+      // write ref
+      // https://github.com/greiman/SdFat/blob/46aff556c5ecad832ca3f19e184fd06e765f5641/src/FatLib/FatFile.h#L918
+      f.write(buf, sizeof(float));
+      f.flush();
+
+      f.close();
     }
-    ++temperatureHistoryOff;*/
+    TEMPERATURE_HISTORY_RESET = false;
+
     lastTemperatureHistoryRecord = millis();
+    digitalWrite(NONETH_ACTIVITY_LED_PIN, LOW);
+
+    noneth_ledoff();
   }
 }
