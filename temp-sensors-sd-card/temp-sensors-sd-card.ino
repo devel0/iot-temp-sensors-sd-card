@@ -31,7 +31,7 @@
 #define TEMPERATURE_HISTORY_INTERVAL_SEC 5
 
 // set to false in production
-bool TEMPERATURE_HISTORY_RESET = true;
+bool TEMPERATURE_HISTORY_RESET = false;
 
 #define SD_CARD_CSPIN 4
 #define ETH_CSPIN 10
@@ -218,6 +218,7 @@ void SetupTemperatureDevices()
     }
   }
 
+  ReadTemperatures(); // discard first read
   ReadTemperatures();
 
   noneth_ledoff();
